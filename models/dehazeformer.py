@@ -5,7 +5,7 @@ import math
 import numpy as np
 from torch.nn.init import _calculate_fan_in_and_fan_out
 from timm.models.layers import to_2tuple, trunc_normal_
-
+import pennylane as qml
 
 class RLN(nn.Module):
 	r"""Revised LayerNorm"""
@@ -375,6 +375,87 @@ class SKFusion(nn.Module):
 		out = torch.sum(in_feats*attn, dim=1)
 		return out      
 
+dev = qml.device("default.qubit", wires=4)
+
+@qml.qnode(dev)
+def QNODE(inputs, weights_0, weights_1):
+
+    measure_set = [0, 2]
+    groups = [[0, 1, 2, 3]]
+    # group the channels
+    for l in range(1):
+        for ws in groups:
+
+            qml.RY(inputs[:, ws[0]], wires = ws[0])
+            qml.RY(inputs[:, ws[1]], wires = ws[1])
+            qml.RY(inputs[:, ws[2]], wires = ws[2])
+            qml.RY(inputs[:, ws[3]], wires = ws[3])
+
+            qml.RY(weights_0[0, l, ws[0]], wires = ws[0])
+            qml.RY(weights_0[0, l, ws[1]], wires = ws[1])
+            qml.RY(weights_0[0, l, ws[2]], wires = ws[2])
+            qml.RY(weights_0[0, l, ws[3]], wires = ws[3])
+
+            qml.IsingXX(weights_1[l, ws[0]], wires = [ws[0], ws[1]])
+            qml.IsingXX(weights_1[l, ws[1]], wires = [ws[2], ws[3]])
+
+            qml.RX(weights_0[1, l, ws[0]], wires = ws[0])
+            qml.RX(weights_0[1, l, ws[1]], wires = ws[1])
+            qml.RX(weights_0[1, l, ws[2]], wires = ws[2])
+            qml.RX(weights_0[1, l, ws[3]], wires = ws[3])
+
+            qml.IsingXX(weights_1[l, ws[2]], wires = [ws[1], ws[2]])
+            qml.IsingXX(weights_1[l, ws[3]], wires = [ws[0], ws[3]])
+            
+            qml.RY(weights_0[2, l, ws[0]], wires = ws[0])
+            qml.RY(weights_0[2, l, ws[1]], wires = ws[1])
+            qml.RY(weights_0[2, l, ws[2]], wires = ws[2])
+            qml.RY(weights_0[2, l, ws[3]], wires = ws[3])
+
+            qml.MultiControlledX(control_wires=[ws[0],ws[1]], wires=ws[2], control_values="10")
+            qml.MultiControlledX(control_wires=[ws[1],ws[2]], wires=ws[3], control_values="10")
+            qml.MultiControlledX(control_wires=[ws[2],ws[3]], wires=ws[0], control_values="10")
+            qml.MultiControlledX(control_wires=[ws[3],ws[0]], wires=ws[1], control_values="10")
+
+    exp_vals_z = [qml.expval(qml.PauliZ(w)) for w in measure_set]
+
+    return exp_vals_z
+
+class Qmodule(nn.Module):
+    def __init__(self, batch_size = 4, out_height = 128, out_width = 128, mode = "bilinear"):
+        super().__init__()
+        self.weight_shapes = {"weights_0": (3, 1, 4), "weights_1": (1, 4)}
+        self.qlayer1 = qml.qnn.TorchLayer(QNODE, self.weight_shapes)
+        self.qlayer2 = qml.qnn.TorchLayer(QNODE, self.weight_shapes)
+        self.qlayer3 = qml.qnn.TorchLayer(QNODE, self.weight_shapes)
+        self.qlayer4 = qml.qnn.TorchLayer(QNODE, self.weight_shapes)
+        self.qlayer5 = qml.qnn.TorchLayer(QNODE, self.weight_shapes)
+        self.qlayer6 = qml.qnn.TorchLayer(QNODE, self.weight_shapes)
+        self.qlayer7 = qml.qnn.TorchLayer(QNODE, self.weight_shapes)
+        self.qlayer8 = qml.qnn.TorchLayer(QNODE, self.weight_shapes)
+        self.max = nn.AdaptiveAvgPool2d((2, 2))
+        self.avg = nn.AdaptiveAvgPool2d((2, 2))
+        self.out_height = out_height
+        self.out_width = out_width
+        self.batch_size = batch_size
+        self.mode = mode
+        
+
+    def forward(self, x):
+        device = x.device
+        x = 0.4 * self.avg(x) + 0.6 * self.max(x)
+        x = x.view(self.batch_size, -1, 4)
+        # [b, c, 4] -> [b, c, 4]
+        x = torch.cat((self.qlayer1(x), self.qlayer2(x), self.qlayer3(x), self.qlayer4(x),\
+                       self.qlayer5(x), self.qlayer6(x), self.qlayer7(x), self.qlayer8(x)), 2)
+        x = x.view(self.batch_size, -1, 4, 4)
+        x = F.interpolate(
+            x.to(device), 
+            size=(self.out_height, self.out_width), 
+            mode=self.mode, 
+            align_corners=False
+        ) if self.mode in ('bilinear', 'bicubic') else self.upsample_conv(x.to(device))
+        return x		   # b, 48, 128, 128, fixed 
 
 class DehazeFormer(nn.Module):
 	def __init__(self, in_chans=3, out_chans=4, window_size=8,
@@ -448,6 +529,7 @@ class DehazeFormer(nn.Module):
 		self.patch_unembed = PatchUnEmbed(
 			patch_size=1, out_chans=out_chans, embed_dim=embed_dims[4], kernel_size=3)
 
+		self.temp = {}
 
 	def check_image_size(self, x):
 		# NOTE: for I2I test
@@ -457,39 +539,83 @@ class DehazeFormer(nn.Module):
 		x = F.pad(x, (0, mod_pad_w, 0, mod_pad_h), 'reflect')
 		return x
 
-	def forward_features(self, x):
+	def encode(self, x):
+		self.check_image_size(x)
 		x = self.patch_embed(x)
 		x = self.layer1(x)
 		skip1 = x
+		self.temp['skip1'] = skip1
 
 		x = self.patch_merge1(x)
 		x = self.layer2(x)
 		skip2 = x
+		self.temp['skip2'] = skip2
 
 		x = self.patch_merge2(x)
 		x = self.layer3(x)
 		x = self.patch_split1(x)
+		self.temp['skip3'] = x
 
-		x = self.fusion1([x, self.skip2(skip2)]) + x
+	def fuse(self, q_features : None):
+		# fuse skip connections
+		x = self.fusion1([self.temp['skip3'], self.skip2(self.temp['skip2'])])\
+			+ self.temp['skip3']
+		x = x + q_features if q_features is not None else x
+		return x
+
+	def decode(self, x):
 		x = self.layer4(x)
 		x = self.patch_split2(x)
 
-		x = self.fusion2([x, self.skip1(skip1)]) + x
+		x = self.fusion2([x, self.skip1(self.temp['skip1'])]) + x
 		x = self.layer5(x)
 		x = self.patch_unembed(x)
 		return x
 
 	def forward(self, x):
-		H, W = x.shape[2:]
-		x = self.check_image_size(x)
+		K, B = torch.split(x, (1, 3), dim=1)
 
-		feat = self.forward_features(x)
-		K, B = torch.split(feat, (1, 3), dim=1)
+		# K: transmission map, B: background
+		# uncomment the following lines to use the original DehazeFormer output
+		
+		# H, W = x.shape[2:]
+		# x = K * x - B + x
+		# x = x[:, :, :H, :W]
+		
+		t = 1 / (K + 1e-6)
+		return t
 
-		x = K * x - B + x
-		x = x[:, :, :H, :W]
+class HSIDehazeFormer(nn.Module):
+	def __init__(self, pretrained=True, batch_size=4):
+		super(HSIDehazeFormer, self).__init__()
+		self.HSI_input = nn.Conv2d(172, 3, kernel_size=3, padding=1, padding_mode='reflect')
+		self.HSI_output = nn.Conv2d(1, 172, kernel_size=3, padding=1, padding_mode='reflect')
+		self.dehazeformer = DehazeFormer(
+			in_chans=3, out_chans=4,
+			embed_dims=[24, 48, 96, 48, 24],
+			mlp_ratios=[2., 4., 4., 2., 2.],
+			depths=[16, 16, 16, 8, 8],
+			num_heads=[2, 4, 6, 1, 1],
+			attn_ratio=[1/4, 1/2, 3/4, 0, 0],
+			conv_type=['DWConv', 'DWConv', 'DWConv', 'DWConv', 'DWConv'])
+		if pretrained:
+			self.dehazeformer.load_state_dict(torch.load('pretrained/dehazeformer.pth', map_location='cpu'))
+			# freeze dehazeformer parameters
+		for param in self.dehazeformer.parameters():
+			param.requires_grad = False
+		self.qnn = Qmodule(batch_size=batch_size, out_height=128, out_width=128, mode='bilinear')
+		
+	def forward(self, x):
+		# x: (B, 172, H, W)
+		x = self.HSI_input(x)
+		# (B, 3, H, W)
+		x = self.dehazeformer.encode(x) 
+		xq = self.qnn(self.dehazeformer.temp['skip3'])  				# (B, 48, H, W)
+		x = self.dehazeformer.fuse(xq)  								# (B, 48, H, W)
+		x = self.dehazeformer.decode(x)  								# (B, 4, H, W)
+		x = self.dehazeformer(x)
+		x = self.HSI_output(x) 											# (B, 172, H, W)
 		return x
-
 
 def dehazeformer_t():
     return DehazeFormer(
@@ -559,3 +685,10 @@ def dehazeformer_l():
 		num_heads=[2, 4, 6, 1, 1],
 		attn_ratio=[1/4, 1/2, 3/4, 0, 0],
 		conv_type=['Conv', 'Conv', 'Conv', 'Conv', 'Conv'])
+
+
+if __name__ == '__main__':
+	t = torch.randn(8, 172, 256, 256)
+	model = HSIDehazeFormer(batch_size=8,pretrained=False)
+	out = model(t)
+	print(out.shape)  # should be (1, 172, 256, 256)
