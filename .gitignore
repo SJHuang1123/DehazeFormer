@@ -3,7 +3,7 @@
 _backup/
 data/
 results/
-saved_models/
+# saved_models/
 logs/
 
 !data/

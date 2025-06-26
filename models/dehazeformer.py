@@ -443,12 +443,13 @@ class Qmodule(nn.Module):
 
     def forward(self, x):
         device = x.device
+        B = x.shape[0]
         x = 0.4 * self.avg(x) + 0.6 * self.max(x)
-        x = x.view(self.batch_size, -1, 4)
+        x = x.view(B, -1, 4)
         # [b, c, 4] -> [b, c, 4]
         x = torch.cat((self.qlayer1(x), self.qlayer2(x), self.qlayer3(x), self.qlayer4(x),\
                        self.qlayer5(x), self.qlayer6(x), self.qlayer7(x), self.qlayer8(x)), 2)
-        x = x.view(self.batch_size, -1, 4, 4)
+        x = x.view(B, -1, 4, 4)
         x = F.interpolate(
             x.to(device), 
             size=(self.out_height, self.out_width), 
@@ -572,24 +573,41 @@ class DehazeFormer(nn.Module):
 		x = self.patch_unembed(x)
 		return x
 
-	def forward(self, x):
-		K, B = torch.split(x, (1, 3), dim=1)
+	def forward(self, x, feat):
+		K, B = torch.split(feat, (1, 3), dim=1)
 
 		# K: transmission map, B: background
 		# uncomment the following lines to use the original DehazeFormer output
 		
-		# H, W = x.shape[2:]
-		# x = K * x - B + x
-		# x = x[:, :, :H, :W]
+		H, W = x.shape[2:]
+		x = K * x - B + x
+		x = x[:, :, :H, :W]
 		
-		t = 1 / (K + 1e-6)
-		return t
+		return x
 
 class HSIDehazeFormer(nn.Module):
 	def __init__(self, pretrained=True, batch_size=4):
 		super(HSIDehazeFormer, self).__init__()
-		self.HSI_input = nn.Conv2d(172, 3, kernel_size=3, padding=1, padding_mode='reflect')
-		self.HSI_output = nn.Conv2d(1, 172, kernel_size=3, padding=1, padding_mode='reflect')
+		self.HSI_input = nn.Sequential(
+			nn.Conv2d(172, 64, kernel_size=3, padding=1, padding_mode='reflect'),
+			nn.ReLU(inplace=True),
+			nn.BatchNorm2d(64, momentum=0.1),
+			nn.Conv2d(64, 32, kernel_size=3, padding=1, padding_mode='reflect'),
+			nn.ReLU(inplace=True),
+			nn.BatchNorm2d(32, momentum=0.1),
+			nn.Conv2d(32, 3, kernel_size=3, padding=1, padding_mode='reflect')
+		)
+
+		self.HSI_output = nn.Sequential(
+			nn.Conv2d(3, 64, kernel_size=3, padding=1, padding_mode='reflect'),
+			nn.ReLU(inplace=True),
+			nn.BatchNorm2d(64, momentum=0.1),
+			nn.Conv2d(64, 128, kernel_size=3, padding=1, padding_mode='reflect'),
+			nn.ReLU(inplace=True),
+			nn.BatchNorm2d(128, momentum=0.1),
+			nn.Conv2d(128, 172, kernel_size=3, padding=1, padding_mode='reflect'),
+			nn.Sigmoid()
+		)
 		self.dehazeformer = DehazeFormer(
 			in_chans=3, out_chans=4,
 			embed_dims=[24, 48, 96, 48, 24],
@@ -599,7 +617,7 @@ class HSIDehazeFormer(nn.Module):
 			attn_ratio=[1/4, 1/2, 3/4, 0, 0],
 			conv_type=['DWConv', 'DWConv', 'DWConv', 'DWConv', 'DWConv'])
 		if pretrained:
-			self.dehazeformer.load_state_dict(torch.load('pretrained/dehazeformer.pth', map_location='cpu'))
+			self.dehazeformer.load_state_dict(torch.load('/home/q36131207/DehazeFormer/saved_models/dehazeformer-s.pth', map_location='cpu')['state_dict'], strict=False)
 			# freeze dehazeformer parameters
 		for param in self.dehazeformer.parameters():
 			param.requires_grad = False
@@ -609,11 +627,11 @@ class HSIDehazeFormer(nn.Module):
 		# x: (B, 172, H, W)
 		x = self.HSI_input(x)
 		# (B, 3, H, W)
-		x = self.dehazeformer.encode(x) 
+		self.dehazeformer.encode(x) 
 		xq = self.qnn(self.dehazeformer.temp['skip3'])  				# (B, 48, H, W)
-		x = self.dehazeformer.fuse(xq)  								# (B, 48, H, W)
-		x = self.dehazeformer.decode(x)  								# (B, 4, H, W)
-		x = self.dehazeformer(x)
+		feat = self.dehazeformer.fuse(xq)  								# (B, 48, H, W)
+		feat = self.dehazeformer.decode(feat)  								# (B, 4, H, W)
+		x = self.dehazeformer(x, feat)
 		x = self.HSI_output(x) 											# (B, 172, H, W)
 		return x
 

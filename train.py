@@ -6,13 +6,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.cuda.amp import autocast, GradScaler
 from torch.utils.data import DataLoader
-from tensorboardX import SummaryWriter
 from tqdm import tqdm
-
+from torchvision.utils import save_image
 from utils import AverageMeter
 from datasets.loader import PairLoader
-from models import *
+import models.dehazeformer as models
+from HSI_dataset import HyperspectralDehazeDataset
 
+BATCH_SIZE = 2
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--model', default='dehazeformer-s', type=str, help='model name')
@@ -23,7 +24,7 @@ parser.add_argument('--data_dir', default='./data/', type=str, help='path to dat
 parser.add_argument('--log_dir', default='./logs/', type=str, help='path to logs')
 parser.add_argument('--dataset', default='RESIDE-IN', type=str, help='dataset name')
 parser.add_argument('--exp', default='indoor', type=str, help='experiment setting')
-parser.add_argument('--gpu', default='0,1,2,3', type=str, help='GPUs used for training')
+parser.add_argument('--gpu', default='0,1', type=str, help='GPUs used for training')
 args = parser.parse_args()
 
 os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
@@ -37,12 +38,15 @@ def train(train_loader, network, criterion, optimizer, scaler):
 	network.train()
 
 	for batch in train_loader:
-		source_img = batch['source'].cuda()
-		target_img = batch['target'].cuda()
+		ground_truth = batch['gt'].cuda()
+		if ground_truth.size(0) < BATCH_SIZE:
+			continue
+		trans_map = batch['trans'].cuda()
+		hazy_img = ground_truth * trans_map + (1 - trans_map)
 
 		with autocast(args.no_autocast):
-			output = network(source_img)
-			loss = criterion(output, target_img)
+			output = network(hazy_img)
+			loss = criterion(output, ground_truth)
 
 		losses.update(loss.item())
 
@@ -60,18 +64,31 @@ def valid(val_loader, network):
 	torch.cuda.empty_cache()
 
 	network.eval()
-
-	for batch in val_loader:
-		source_img = batch['source'].cuda()
-		target_img = batch['target'].cuda()
+	import random
+	magic = random.randint(1, 20)  # for saving images every magic iterations
+	for i, batch in enumerate(val_loader):
+		ground_truth = batch['gt'].cuda()
+		if ground_truth.size(0) < BATCH_SIZE:
+			continue
+		trans_map = batch['trans'].cuda()
+		hazy_img = ground_truth * trans_map + (1 - trans_map)
 
 		with torch.no_grad():							# torch.no_grad() may cause warning
-			output = network(source_img).clamp_(-1, 1)		
+			output = network(hazy_img).clamp_(0, 1)		
 
-		mse_loss = F.mse_loss(output * 0.5 + 0.5, target_img * 0.5 + 0.5, reduction='none').mean((1, 2, 3))
+		mse_loss = F.mse_loss(output, ground_truth, reduction='none').mean((1, 2, 3))
 		psnr = 10 * torch.log10(1 / mse_loss).mean()
-		PSNR.update(psnr.item(), source_img.size(0))
-
+		PSNR.update(psnr.item(), ground_truth.size(0))
+		if i % magic == 0:
+			img_to_save = torch.cat(
+				[
+					ground_truth[:,[25,15,6],:,:],
+					hazy_img[:,[25,15,6],:,:],
+					output[:,[25,15,6],:,:],
+				],
+				dim=0
+			)
+			save_image(img_to_save, 'result.jpg', nrow=BATCH_SIZE)
 	return PSNR.avg
 
 
@@ -82,8 +99,13 @@ if __name__ == '__main__':
 	with open(setting_filename, 'r') as f:
 		setting = json.load(f)
 
-	network = eval(args.model.replace('-', '_'))()
-	network = nn.DataParallel(network).cuda()
+	network = models.HSIDehazeFormer(pretrained=True, batch_size=BATCH_SIZE).cuda()
+	
+	# uncomment for resume
+
+	# ckp = torch.load('/home/q36131207/DehazeFormer/saved_models/indoor/QHSID_trans.pth')
+	# network.load_state_dict(ckp['state_dict'], strict=False)
+	# network = nn.DataParallel(network).cuda()
 
 	criterion = nn.L1Loss()
 
@@ -97,19 +119,17 @@ if __name__ == '__main__':
 	scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=setting['epochs'], eta_min=setting['lr'] * 1e-2)
 	scaler = GradScaler()
 
-	dataset_dir = os.path.join(args.data_dir, args.dataset)
-	train_dataset = PairLoader(dataset_dir, 'train', 'train', 
-								setting['patch_size'], setting['edge_decay'], setting['only_h_flip'])
+	dataset_dir = '/home/q36131207/HSID_dataset/AVIRIS'
+	train_dataset = HyperspectralDehazeDataset(dataset_dir + '/qtrain')
 	train_loader = DataLoader(train_dataset,
-                              batch_size=setting['batch_size'],
+                              batch_size=BATCH_SIZE,
                               shuffle=True,
                               num_workers=args.num_workers,
                               pin_memory=True,
                               drop_last=True)
-	val_dataset = PairLoader(dataset_dir, 'test', setting['valid_mode'], 
-							  setting['patch_size'])
+	val_dataset = HyperspectralDehazeDataset(dataset_dir + '/qval')
 	val_loader = DataLoader(val_dataset,
-                            batch_size=setting['batch_size'],
+                            batch_size=BATCH_SIZE,
                             num_workers=args.num_workers,
                             pin_memory=True)
 
@@ -117,30 +137,24 @@ if __name__ == '__main__':
 	os.makedirs(save_dir, exist_ok=True)
 
 	if not os.path.exists(os.path.join(save_dir, args.model+'.pth')):
-		print('==> Start training, current model name: ' + args.model)
+		print('==> Start training')
 		# print(network)
 
-		writer = SummaryWriter(log_dir=os.path.join(args.log_dir, args.exp, args.model))
 
 		best_psnr = 0
 		for epoch in tqdm(range(setting['epochs'] + 1)):
 			loss = train(train_loader, network, criterion, optimizer, scaler)
 
-			writer.add_scalar('train_loss', loss, epoch)
-
+			print(f'Epoch [{epoch}/{setting["epochs"]}], Loss: {loss:.4f}')
 			scheduler.step()
 
 			if epoch % setting['eval_freq'] == 0:
 				avg_psnr = valid(val_loader, network)
 				
-				writer.add_scalar('valid_psnr', avg_psnr, epoch)
-
-				if avg_psnr > best_psnr:
-					best_psnr = avg_psnr
-					torch.save({'state_dict': network.state_dict()},
-                			   os.path.join(save_dir, args.model+'.pth'))
-				
-				writer.add_scalar('best_psnr', best_psnr, epoch)
+			if avg_psnr > best_psnr:
+				print(f'==> New Best PSNR: {avg_psnr:.4f}, saving model...')
+				best_psnr = avg_psnr
+				torch.save(network.state_dict(), os.path.join(save_dir, 'QHSID' +'.pth'))
 
 	else:
 		print('==> Existing trained model')
