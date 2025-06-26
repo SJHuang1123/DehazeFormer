@@ -65,7 +65,7 @@ def valid(val_loader, network):
 
 	network.eval()
 	import random
-	magic = random.randint(1, 20)  # for saving images every magic iterations
+	magic = 10
 	for i, batch in enumerate(val_loader):
 		ground_truth = batch['gt'].cuda()
 		if ground_truth.size(0) < BATCH_SIZE:

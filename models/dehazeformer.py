@@ -557,11 +557,11 @@ class DehazeFormer(nn.Module):
 		x = self.patch_split1(x)
 		self.temp['skip3'] = x
 
-	def fuse(self, q_features : None):
+	def fuse(self, q_features, attention=None, attention_q=None):
 		# fuse skip connections
 		x = self.fusion1([self.temp['skip3'], self.skip2(self.temp['skip2'])])\
 			+ self.temp['skip3']
-		x = x + q_features if q_features is not None else x
+		x = x * attention + q_features * attention_q if q_features is not None else x
 		return x
 
 	def decode(self, x):
@@ -577,7 +577,6 @@ class DehazeFormer(nn.Module):
 		K, B = torch.split(feat, (1, 3), dim=1)
 
 		# K: transmission map, B: background
-		# uncomment the following lines to use the original DehazeFormer output
 		
 		H, W = x.shape[2:]
 		x = K * x - B + x
@@ -622,17 +621,20 @@ class HSIDehazeFormer(nn.Module):
 		for param in self.dehazeformer.parameters():
 			param.requires_grad = False
 		self.qnn = Qmodule(batch_size=batch_size, out_height=128, out_width=128, mode='bilinear')
+
+		self.attention_q = nn.Parameter(torch.randn(1, 48, 1, 1), requires_grad=True)
+		self.attention = nn.Parameter(torch.randn(1, 48, 1, 1), requires_grad=True)
 		
 	def forward(self, x):
 		# x: (B, 172, H, W)
 		x = self.HSI_input(x)
 		# (B, 3, H, W)
 		self.dehazeformer.encode(x) 
-		xq = self.qnn(self.dehazeformer.temp['skip3'])  				# (B, 48, H, W)
-		feat = self.dehazeformer.fuse(xq)  								# (B, 48, H, W)
-		feat = self.dehazeformer.decode(feat)  								# (B, 4, H, W)
+		xq = self.qnn(self.dehazeformer.temp['skip3'])  				    # (B, 48, H, W)
+		feat = self.dehazeformer.fuse(xq, self.attention, self.attention_q)	# (B, 48, H, W)
+		feat = self.dehazeformer.decode(feat)  							    # (B, 4, H, W)
 		x = self.dehazeformer(x, feat)
-		x = self.HSI_output(x) 											# (B, 172, H, W)
+		x = self.HSI_output(x) 											    # (B, 172, H, W)
 		return x
 
 def dehazeformer_t():
