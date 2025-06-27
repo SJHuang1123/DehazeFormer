@@ -7,9 +7,11 @@ from pytorch_msssim import ssim
 from torch.utils.data import DataLoader
 from collections import OrderedDict
 
+import models
 from utils import AverageMeter, write_img, chw_to_hwc
 from datasets.loader import PairLoader
-from models import *
+import models
+from torchvision import transforms
 from HSI_dataset import HyperspectralDehazeDataset
 
 FILE_NAME = 'HSID'
@@ -84,6 +86,7 @@ def test(test_loader, network, result_dir):
 	os.makedirs(os.path.join(result_dir, 'imgs'), exist_ok=True)
 	f_result = open(os.path.join(result_dir, 'results.csv'), 'w')
 	sam_val_sum = 0.0
+	magic = 6
 	for idx, batch in enumerate(test_loader):
 		ground_truth = batch['gt'].cuda()
 		trans = batch['trans'].cuda()
@@ -103,7 +106,9 @@ def test(test_loader, network, result_dir):
 		sam_val_sum += sam_val
 		PSNR.update(psnr_val)
 		SSIM.update(ssim_val)
-
+		if idx == magic:
+			from torchvision.utils import save_image
+			save_image(output[:, [25, 15, 6], :, :], 'TCRM.jpg')
 		print('Test: [{0}]\t'
 			'PSNR: {psnr.val:.02f} ({psnr.avg:.02f})\t'
 			'SSIM: {ssim.val:.03f} ({ssim.avg:.03f})\t'
@@ -122,7 +127,7 @@ def test(test_loader, network, result_dir):
 	)
 
 if __name__ == '__main__':
-	network = dehazeformer.HSIDehazeFormer(batch_size=1)
+	network = models.dehazeformer.HSIDehazeFormer(pretrained=False,batch_size=1)
 	network.eval()
 	network.cuda()
 
@@ -131,7 +136,11 @@ if __name__ == '__main__':
 	network.load_state_dict(ckp, strict=False)
 
 	dataset_dir = '/home/q36131207/HSID_dataset/AVIRIS'
-	test_dataset = HyperspectralDehazeDataset(dataset_dir + '/qtest')
+	# dummy transform
+	t = transforms.Compose([
+		transforms.Lambda(lambda x : x)
+	])
+	test_dataset = HyperspectralDehazeDataset(dataset_dir + '/qtest', transform=t)
 	test_loader = DataLoader(test_dataset,
                               batch_size=1,
                               shuffle=True,
