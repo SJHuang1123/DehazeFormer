@@ -143,7 +143,7 @@ if __name__ == '__main__':
 	test_dataset = HyperspectralDehazeDataset(dataset_dir + '/qtest', transform=t)
 	test_loader = DataLoader(test_dataset,
                               batch_size=1,
-                              shuffle=True,
+                              shuffle=False,
                               num_workers=args.num_workers,
                               pin_memory=True,
                               drop_last=True)
