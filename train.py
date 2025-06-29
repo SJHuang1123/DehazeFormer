@@ -8,9 +8,10 @@ from torch.cuda.amp import autocast, GradScaler
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from torchvision.utils import save_image
+import models.gunet
 from utils import AverageMeter
 from datasets.loader import PairLoader
-import models.dehazeformer as models
+import models
 from HSI_dataset import HyperspectralDehazeDataset
 
 BATCH_SIZE = 2
@@ -101,12 +102,12 @@ if __name__ == '__main__':
 	with open(setting_filename, 'r') as f:
 		setting = json.load(f)
 
-	network = models.HSIDehazeFormer(pretrained=False, batch_size=BATCH_SIZE).cuda()
+	network = models.gunet.QGUnet(gu_pretrained=True).cuda()
 	
 	# uncomment for resume
 
-	ckp = torch.load('/home/q36131207/DehazeFormer/saved_models/indoor/QHSID.pth')
-	network.load_state_dict(ckp, strict=False)
+	# ckp = torch.load('/home/q36131207/DehazeFormer/saved_models/indoor/QHSID.pth')
+	# network.load_state_dict(ckp, strict=False)
 	# network = nn.DataParallel(network).cuda()
 
 	criterion = nn.L1Loss()

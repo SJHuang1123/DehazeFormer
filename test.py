@@ -106,9 +106,9 @@ def test(test_loader, network, result_dir):
 		PSNR.update(psnr_val)
 		SSIM.update(ssim_val)
 		from torchvision.utils import save_image
-		save_image(output[:, [25, 15, 6], :, :], f'/home/q36131207/DehazeFormer/results/RESIDE-IN/dehazeformer-s/imgs/out-proposed_{idx}.jpg')
-		save_image(ground_truth[:, [25, 15, 6], :, :], f'/home/q36131207/DehazeFormer/results/RESIDE-IN/dehazeformer-s/imgs/gt-proposed_{idx}.jpg')
-		save_image(hazy[:, [25, 15, 6], :, :], f'/home/q36131207/DehazeFormer/results/RESIDE-IN/dehazeformer-s/imgs/hazy-proposed_{idx}.jpg')
+		save_image(output[:, [25, 15, 6], :, :], f'/home/q36131207/DehazeFormer/results/RESIDE-IN/dehazeformer-s/imgs/proposed/proposed_{idx}.jpg')
+		save_image(ground_truth[:, [25, 15, 6], :, :], f'/home/q36131207/DehazeFormer/results/RESIDE-IN/dehazeformer-s/imgs/gt/gt_{idx}.jpg')
+		save_image(hazy[:, [25, 15, 6], :, :], f'/home/q36131207/DehazeFormer/results/RESIDE-IN/dehazeformer-s/imgs/hazy/hazy_{idx}.jpg')
 		print('Test: [{0}]\t'
 			'PSNR: {psnr.val:.02f} ({psnr.avg:.02f})\t'
 			'SSIM: {ssim.val:.03f} ({ssim.avg:.03f})\t'
@@ -132,7 +132,7 @@ if __name__ == '__main__':
 	network.cuda()
 
 	# Load pretrained weights
-	ckp = torch.load('/home/q36131207/DehazeFormer/saved_models/indoor/QHSID.pth')
+	ckp = torch.load('/home/q36131207/DehazeFormer/saved_models/indoor/QHSID-dehazeformer.pth')
 	network.load_state_dict(ckp, strict=False)
 
 	dataset_dir = '/home/q36131207/HSID_dataset/AVIRIS'
