@@ -86,7 +86,6 @@ def test(test_loader, network, result_dir):
 	os.makedirs(os.path.join(result_dir, 'imgs'), exist_ok=True)
 	f_result = open(os.path.join(result_dir, 'results.csv'), 'w')
 	sam_val_sum = 0.0
-	magic = 6
 	for idx, batch in enumerate(test_loader):
 		ground_truth = batch['gt'].cuda()
 		trans = batch['trans'].cuda()
@@ -106,9 +105,10 @@ def test(test_loader, network, result_dir):
 		sam_val_sum += sam_val
 		PSNR.update(psnr_val)
 		SSIM.update(ssim_val)
-		if idx == magic:
-			from torchvision.utils import save_image
-			save_image(output[:, [25, 15, 6], :, :], 'TCRM.jpg')
+		from torchvision.utils import save_image
+		save_image(output[:, [25, 15, 6], :, :], f'/home/q36131207/DehazeFormer/results/RESIDE-IN/dehazeformer-s/imgs/out-proposed_{idx}.jpg')
+		save_image(ground_truth[:, [25, 15, 6], :, :], f'/home/q36131207/DehazeFormer/results/RESIDE-IN/dehazeformer-s/imgs/gt-proposed_{idx}.jpg')
+		save_image(hazy[:, [25, 15, 6], :, :], f'/home/q36131207/DehazeFormer/results/RESIDE-IN/dehazeformer-s/imgs/hazy-proposed_{idx}.jpg')
 		print('Test: [{0}]\t'
 			'PSNR: {psnr.val:.02f} ({psnr.avg:.02f})\t'
 			'SSIM: {ssim.val:.03f} ({ssim.avg:.03f})\t'

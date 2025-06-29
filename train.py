@@ -14,6 +14,8 @@ import models.dehazeformer as models
 from HSI_dataset import HyperspectralDehazeDataset
 
 BATCH_SIZE = 2
+SEED = 42
+torch.manual_seed(SEED)
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--model', default='dehazeformer-s', type=str, help='model name')
@@ -99,12 +101,12 @@ if __name__ == '__main__':
 	with open(setting_filename, 'r') as f:
 		setting = json.load(f)
 
-	network = models.HSIDehazeFormer(pretrained=True, batch_size=BATCH_SIZE).cuda()
+	network = models.HSIDehazeFormer(pretrained=False, batch_size=BATCH_SIZE).cuda()
 	
 	# uncomment for resume
 
-	# ckp = torch.load('/home/q36131207/DehazeFormer/saved_models/indoor/QHSID_trans.pth')
-	# network.load_state_dict(ckp['state_dict'], strict=False)
+	ckp = torch.load('/home/q36131207/DehazeFormer/saved_models/indoor/QHSID.pth')
+	network.load_state_dict(ckp, strict=False)
 	# network = nn.DataParallel(network).cuda()
 
 	criterion = nn.L1Loss()
