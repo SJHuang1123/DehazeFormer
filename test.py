@@ -8,6 +8,7 @@ from torch.utils.data import DataLoader
 from collections import OrderedDict
 
 import models
+import models.gunet
 from utils import AverageMeter, write_img, chw_to_hwc
 from datasets.loader import PairLoader
 import models
@@ -127,12 +128,12 @@ def test(test_loader, network, result_dir):
 	)
 
 if __name__ == '__main__':
-	network = models.dehazeformer.HSIDehazeFormer(pretrained=False,batch_size=1)
+	network = models.gunet.QGUnet()
 	network.eval()
 	network.cuda()
 
 	# Load pretrained weights
-	ckp = torch.load('/home/q36131207/DehazeFormer/saved_models/indoor/QHSID-dehazeformer.pth')
+	ckp = torch.load('/home/q36131207/DehazeFormer/saved_models/indoor/QHSID.pth')
 	network.load_state_dict(ckp, strict=False)
 
 	dataset_dir = '/home/q36131207/HSID_dataset/AVIRIS'
